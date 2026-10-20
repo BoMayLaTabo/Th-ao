@@ -6,7 +6,7 @@ import asyncio
 from collections import defaultdict, deque
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
@@ -106,6 +106,8 @@ async def on_member_join(member):
 @bot.event
 async def on_ready():
     print(f"Online as {bot.user} ({bot.user.id})")
+    if not automatic_backup.is_running():
+        automatic_backup.start()
 
 @bot.event
 async def setup_hook():
@@ -130,7 +132,7 @@ async def ping(interaction: discord.Interaction):
 @bot.tree.command(description="List available commands")
 async def help(interaction: discord.Interaction):
     await interaction.response.send_message(
-        "/ping, /help, /botinfo, /serverinfo, /setup, /dashboard, /antinuke, /antiraid, /security, /whitelist, /lockdown, /unlock, /ban, /kick, /timeout, /untimeout, /purge, /lock, /warn, /warnings",
+        "/ping, /help, /botinfo, /serverinfo, /setup, /dashboard, /antinuke, /antiraid, /security, /whitelist, /lockdown, /unlock, /ban, /kick, /timeout, /untimeout, /purge, /lock, /warn, /warnings, /backup_create, /backup_status, /recovery_preview, /recovery_full",
         ephemeral=True)
 
 @bot.tree.command(description="Bot information")
@@ -260,5 +262,77 @@ async def tree_error(interaction: discord.Interaction, error: app_commands.AppCo
         await interaction.followup.send(message[:1900], ephemeral=True)
     else:
         await interaction.response.send_message(message[:1900], ephemeral=True)
+
+
+from recovery import create_backup, load_backup, backup_status, restore
+
+@bot.tree.command(name="backup_create", description="Sao lưu cấu trúc server ngay bây giờ")
+@admin_only()
+async def backup_create(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Chỉ dùng trong server.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    data = create_backup(interaction.guild)
+    await interaction.followup.send(
+        f"Đã lưu backup {len(data['roles'])} roles và {len(data['channels'])} channels. "
+        "Lưu ý: tạo backup mới sẽ ghi đè bản trước.", ephemeral=True)
+
+@bot.tree.command(name="backup_status", description="Kiểm tra bản sao lưu server")
+@admin_only()
+async def backup_status_command(interaction: discord.Interaction):
+    await interaction.response.send_message(backup_status(interaction.guild), ephemeral=True)
+
+@bot.tree.command(name="recovery_preview", description="Xem những gì có thể khôi phục")
+@admin_only()
+async def recovery_preview(interaction: discord.Interaction):
+    try:
+        data = load_backup(interaction.guild)
+    except (FileNotFoundError, ValueError) as exc:
+        return await interaction.response.send_message(str(exc), ephemeral=True)
+    missing_roles = [r for r in data["roles"] if interaction.guild.get_role(r["id"]) is None]
+    missing_channels = [c for c in data["channels"] if interaction.guild.get_channel(c["id"]) is None]
+    await interaction.response.send_message(
+        f"Backup {data['created_at']}\nThiếu {len(missing_roles)} roles và {len(missing_channels)} channels.\n"
+        "Dùng /recovery_full confirm:CONFIRM để tạo lại. Không xóa dữ liệu hiện có.",
+        ephemeral=True)
+
+@bot.tree.command(name="recovery_full", description="Tạo lại roles và channels bị xóa từ backup")
+@admin_only()
+@app_commands.describe(confirm="Nhập CONFIRM để xác nhận khôi phục")
+async def recovery_full(interaction: discord.Interaction, confirm: str):
+    if confirm != "CONFIRM":
+        return await interaction.response.send_message("Phải nhập chính xác CONFIRM.", ephemeral=True)
+    if interaction.user.id != interaction.guild.owner_id:
+        return await interaction.response.send_message("Chỉ chủ server được phép khôi phục toàn bộ.", ephemeral=True)
+    try:
+        data = load_backup(interaction.guild)
+    except (FileNotFoundError, ValueError) as exc:
+        return await interaction.response.send_message(str(exc), ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    result = await restore(interaction.guild, data)
+    await interaction.followup.send(
+        f"Đã tạo lại {result['roles']} roles, {result['channels']} channels. "
+        f"Lỗi: {len(result['errors'])}.\n" +
+        "\n".join(result["errors"][:8])[:1300], ephemeral=True)
+
+@tasks.loop(hours=6)
+async def automatic_backup():
+    for guild in bot.guilds:
+        try:
+            try:
+                previous = load_backup(guild)
+            except FileNotFoundError:
+                previous = None
+            if previous and (any(guild.get_role(r["id"]) is None for r in previous["roles"])
+                or any(guild.get_channel(c["id"]) is None for c in previous["channels"])):
+                print(f"Skipped backup for {guild.id}: missing objects from last known backup")
+                continue
+            create_backup(guild)
+        except Exception as exc:
+            print(f"Backup failed for {guild.id}: {exc}")
+
+@automatic_backup.before_loop
+async def before_automatic_backup():
+    await bot.wait_until_ready()
 
 bot.run(TOKEN)

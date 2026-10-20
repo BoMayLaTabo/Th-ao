@@ -3,6 +3,7 @@ import secrets
 import html
 from urllib.parse import urlencode
 from aiohttp import web, ClientSession
+from recovery import backup_status
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 API = 'https://discord.com/api/v10'
@@ -92,7 +93,7 @@ async def start_dashboard(bot, settings, save_settings):
         body = f'''<a href="/">← Servers</a><h1>{html.escape(guild.name)}</h1><p class="muted">Bot: {html.escape(str(bot.user)) if bot.user else "Starting"} · {guild.member_count} members</p><div class="cards">{card('Anti-Nuke','antinuke')}{card('Anti-Raid','antiraid')}</div>
         <div class="card"><h2>Security Logs</h2><form method="post" action="/guild/{guild.id}/logs"><input type="hidden" name="csrf" value="{me['csrf']}"><select name="channel">{options}</select><button>Lưu kênh log</button></form></div>
         <div class="card"><h2>Whitelist</h2><p class="muted">Trusted user IDs: {html.escape(', '.join(map(str,sorted(cfg['trusted']))) or 'None')}</p><form method="post" action="/guild/{guild.id}/whitelist"><input type="hidden" name="csrf" value="{me['csrf']}"><input name="user_id" placeholder="Discord User ID" required pattern="[0-9]{{15,22}}"><select name="action"><option value="add">Thêm</option><option value="remove">Xóa</option></select><button>Lưu</button></form></div>
-        <p class="notice">Cấu hình lưu trong guard_settings.json. Railway cần gắn Volume để lưu qua lần deploy. Anti-Raid bản này chỉ cảnh báo; Anti-Nuke chưa khôi phục dữ liệu bị xóa.</p>'''
+        <div class="card"><h2>Backup & Recovery</h2><p>{html.escape(backup_status(guild))}</p><p>Dùng /backup_create, /recovery_preview và /recovery_full trong Discord. Khôi phục chỉ tạo lại đối tượng bị xóa, không khôi phục lịch sử tin nhắn.</p></div><p class="notice">Railway cần gắn Volume /data để lưu backup qua lần deploy. Anti-Raid bản này chỉ cảnh báo.</p>'''
         return page(guild.name,body,me['name'])
 
     async def change(request):
