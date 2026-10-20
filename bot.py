@@ -1,4 +1,6 @@
 import os
+import json
+from pathlib import Path
 import time
 import asyncio
 from collections import defaultdict, deque
@@ -15,7 +17,25 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-settings = defaultdict(lambda: {"antinuke": True, "antiraid": True, "log": None, "trusted": set(), "lockdown": False})
+SETTINGS_FILE = Path(os.getenv("SETTINGS_FILE", "guard_settings.json"))
+def default_settings():
+    return {"antinuke": True, "antiraid": True, "log": None, "trusted": set(), "lockdown": False}
+settings = defaultdict(default_settings)
+def save_settings():
+    data = {str(gid): {**cfg, "trusted": list(cfg["trusted"])} for gid, cfg in settings.items()}
+    temp = SETTINGS_FILE.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temp.replace(SETTINGS_FILE)
+def load_settings():
+    if SETTINGS_FILE.exists():
+        try:
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            for gid, cfg in data.items():
+                settings[int(gid)].update(cfg)
+                settings[int(gid)]["trusted"] = set(map(int, cfg.get("trusted", [])))
+        except (ValueError, OSError) as exc:
+            print(f"Settings load warning: {exc}")
+load_settings()
 actions = defaultdict(deque)
 joins = defaultdict(deque)
 
@@ -89,6 +109,8 @@ async def on_ready():
 
 @bot.event
 async def setup_hook():
+    from dashboard import start_dashboard
+    await start_dashboard(bot, settings, save_settings)
     if GUILD_ID:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -135,18 +157,21 @@ async def dashboard(interaction: discord.Interaction):
 @app_commands.describe(enabled="Enable or disable Anti-Nuke")
 async def antinuke(interaction: discord.Interaction, enabled: bool):
     settings[interaction.guild_id]["antinuke"] = enabled
+    save_settings()
     await interaction.response.send_message(f"Anti-Nuke: {'ON' if enabled else 'OFF'}", ephemeral=True)
 
 @bot.tree.command(description="Toggle Anti-Raid join alerts")
 @admin_only()
 async def antiraid(interaction: discord.Interaction, enabled: bool):
     settings[interaction.guild_id]["antiraid"] = enabled
+    save_settings()
     await interaction.response.send_message(f"Anti-Raid alerts: {'ON' if enabled else 'OFF'}", ephemeral=True)
 
 @bot.tree.command(description="Configure security log channel")
 @admin_only()
 async def security(interaction: discord.Interaction, log_channel: discord.TextChannel):
     settings[interaction.guild_id]["log"] = log_channel.id
+    save_settings()
     await interaction.response.send_message(f"Security logs → {log_channel.mention}", ephemeral=True)
 
 @bot.tree.command(description="Add or remove a trusted user")
@@ -154,6 +179,7 @@ async def security(interaction: discord.Interaction, log_channel: discord.TextCh
 async def whitelist(interaction: discord.Interaction, member: discord.Member, trusted: bool):
     trusted_ids = settings[interaction.guild_id]["trusted"]
     (trusted_ids.add if trusted else trusted_ids.discard)(member.id)
+    save_settings()
     await interaction.response.send_message(f"{member.mention}: trusted={trusted}", ephemeral=True)
 
 @bot.tree.command(description="Lock a text channel")
